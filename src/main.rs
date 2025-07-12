@@ -5,7 +5,7 @@ use sdl3::{
     pixels::{PixelFormat, PixelFormatEnum},
 };
 
-use crate::{enums::ClearBufferMask, renderer::GlContext};
+use crate::{enums::ClearBufferMask, renderer::{glClear, glClearColor, glKCreateContext, with_current_context, GlContext}};
 mod renderer;
 mod states;
 mod types;
@@ -32,7 +32,7 @@ fn main() {
             WINDOW_HEIGHT as u32,
         )
         .unwrap();
-    let mut gl_ctx = GlContext::init(WINDOW_WIDTH, WINDOW_HEIGHT);
+    glKCreateContext(WINDOW_WIDTH, WINDOW_HEIGHT, 0);
     'running: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -40,10 +40,10 @@ fn main() {
                 _ => {}
             }
         }
-        gl_ctx.gl_clear_color(1.0, 0.0, 0.0, 1.0);
-        gl_ctx.gl_clear(ClearBufferMask::COLOR as u32);
+        glClearColor(1.0, 0.0, 0.0, 1.0);
+        glClear(ClearBufferMask::COLOR as u32);
         texture
-            .update(None, gl_ctx.system_fb.as_slice_u8().as_slice(), (WINDOW_WIDTH * 4) as usize)
+            .update(None, &with_current_context(|ctx| ctx.system_fb.as_slice_u8() ), (WINDOW_WIDTH * 4) as usize)
             .unwrap();
         canvas.clear();
         canvas.copy(&texture, None, None).unwrap();

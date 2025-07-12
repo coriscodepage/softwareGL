@@ -1,18 +1,50 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use crate::{
-    enums::{self, ClearBufferMask, Framebuffer},
+    enums::{ClearBufferMask, Framebuffer},
     states::{ClearState, ColorValue, FramebufferState},
     types,
 };
 
 static GL_MAX_COLOR_ATTACHMENTS: usize = 16;
 
-// Global state that can be shared between contexts.
-struct GLGlobalState {
+struct GlobalState {
+    contexts: HashMap<usize, GlContext>,
+    next_context_id: usize,
+    current_context: usize,
+}
+
+impl GlobalState {
+    fn init() -> Self {
+        Self {
+            contexts: HashMap::new(),
+            next_context_id: 1,
+            current_context: 1,
+        }
+    }
+}
+
+static GLOBAL_STATE: LazyLock<Mutex<GlobalState>> =
+    LazyLock::new(|| Mutex::new(GlobalState::init()));
+
+pub fn with_current_context<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut GlContext) -> R,
+{
+    let mut state = GLOBAL_STATE.lock().unwrap();
+    let current = state.current_context;
+    let ctx = state.contexts.get_mut(&current).unwrap();
+    f(ctx)
+}
+
+// Shared state that can be shared between contexts.
+struct GLSharedState {
     //textures: RwLock<HashMap<>>
 }
-impl GLGlobalState {
+impl GLSharedState {
     fn init() -> Self {
         Self {}
     }
@@ -93,17 +125,17 @@ impl DefaultFramebuffer {
     pub fn as_slice_u8(&self) -> Vec<u8> {
         let mut ret = Vec::<u8>::with_capacity(self.height * self.width * 4);
         for pixel in &self.color_buffer_back.pixels {
-            ret.push((pixel.alpha * 255.0) as u8 );
-            ret.push((pixel.blue * 255.0) as u8 );
-            ret.push((pixel.green * 255.0) as u8 );
-            ret.push((pixel.red * 255.0) as u8 );
-        };
+            ret.push((pixel.alpha * 255.0) as u8);
+            ret.push((pixel.blue * 255.0) as u8);
+            ret.push((pixel.green * 255.0) as u8);
+            ret.push((pixel.red * 255.0) as u8);
+        }
         ret
     }
 }
 
 pub struct GlContext {
-    shared: Rc<RefCell<GLGlobalState>>,
+    shared: Option<Arc<Mutex<GLSharedState>>>,
     clear_state: ClearState,
     next_fb_id: u32,
     framebuffer_objects: HashMap<u32, FBO>,
@@ -113,10 +145,10 @@ pub struct GlContext {
 
 impl GlContext {
     pub fn init(width: usize, height: usize) -> Self {
-        let mut framebuffer_objects = HashMap::with_capacity(1);
+        let framebuffer_objects = HashMap::with_capacity(1);
         let system_fb = DefaultFramebuffer::init(width, height);
         Self {
-            shared: Rc::new(RefCell::new(GLGlobalState::init())),
+            shared: None,
             clear_state: ClearState::default(),
             next_fb_id: 0,
             framebuffer_objects,
@@ -127,34 +159,59 @@ impl GlContext {
             },
         }
     }
-    pub fn gl_clear_color(&mut self, red: f32, green: f32, blue: f32, alpha: f32) {
-        self.clear_state.color_clear_value = ColorValue::new(red, green, blue, alpha);
-    }
+}
 
-    pub fn gl_clear(&mut self, mask: types::Glbitfield) {
-        match self.framebuffer_state.write_framebuffer {
+#[unsafe(no_mangle)]
+pub extern "C" fn glKCreateContext(width: usize, height: usize, share_with: usize) -> usize {
+    let context = GlContext::init(width, height);
+    let mut global_state = GLOBAL_STATE.lock().unwrap();
+    let context_id = global_state.next_context_id;
+    global_state.contexts.insert(context_id, context);
+    global_state.next_context_id += 1;
+    if share_with != 0 {
+        if let Some(share_with_context) = global_state.contexts.get(&share_with) {
+            with_current_context(|context| context.shared = Some(share_with_context.shared.clone().unwrap_or_else(|| Arc::new(Mutex::new(GLSharedState::init())))));
+        }
+    }
+    context_id
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn glClearColor(red: f32, green: f32, blue: f32, alpha: f32) {
+    with_current_context(|context| {
+        context.clear_state.color_clear_value = ColorValue::new(red, green, blue, alpha);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn glClear(mask: types::Glbitfield) {
+    with_current_context(
+        |context| match context.framebuffer_state.write_framebuffer {
             Framebuffer::Default => match mask {
                 n if ClearBufferMask::COLOR as u32 & n != 0 => {
-                    self.system_fb
+                    context
+                        .system_fb
                         .color_buffer_back
                         .pixels
-                        .fill(self.clear_state.color_clear_value);
+                        .fill(context.clear_state.color_clear_value);
                 }
                 n if ClearBufferMask::DEPTH as u32 & n != 0 => {
-                    if let Some(depth_buffer) = &mut self.system_fb.depth_buffer {
-                        depth_buffer.pixels.fill(self.clear_state.depth_clear_value);
+                    if let Some(depth_buffer) = &mut context.system_fb.depth_buffer {
+                        depth_buffer
+                            .pixels
+                            .fill(context.clear_state.depth_clear_value);
                     }
                 }
                 n if ClearBufferMask::STENCIL as u32 & n != 0 => {
-                    if let Some(stencil_buffer) = &mut self.system_fb.stencil_buffer {
+                    if let Some(stencil_buffer) = &mut context.system_fb.stencil_buffer {
                         stencil_buffer
                             .pixels
-                            .fill(self.clear_state.stenctil_clear_value);
+                            .fill(context.clear_state.stenctil_clear_value);
                     }
                 }
                 _ => panic!(),
             },
             Framebuffer::UserDefined(fbo_id) => todo!(),
-        }
-    }
+        },
+    );
 }
