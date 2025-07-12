@@ -5,11 +5,14 @@ use sdl3::{
     pixels::{PixelFormat, PixelFormatEnum},
 };
 
-use crate::{enums::ClearBufferMask, renderer::{glClear, glClearColor, glKCreateContext, with_current_context, GlContext}};
+use crate::{context::with_current_context, enums::{ClearBufferMask, DrawBufferSys}, renderer::{glBindFramebuffer, glBlitFramebuffer, glClear, glClearColor, glDrawBuffer, glDrawBuffers, glGenFramebuffers}, KoriExt::{glKCreateContext, glKSwapBuffers}};
 mod renderer;
 mod states;
 mod types;
 mod enums;
+#[allow(non_snake_case)]
+mod KoriExt;
+mod context;
 
 fn main() {
     const WINDOW_WIDTH: usize = 800;
@@ -32,7 +35,10 @@ fn main() {
             WINDOW_HEIGHT as u32,
         )
         .unwrap();
-    glKCreateContext(WINDOW_WIDTH, WINDOW_HEIGHT, 0);
+    glKCreateContext(WINDOW_WIDTH, WINDOW_HEIGHT, 0, 1);
+    //glDrawBuffers(1, [0x405u32; 1].as_mut_ptr());
+    let mut cmask = 1u8;
+    let mut test_fbo: [u32; 1] = [0u32];
     'running: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -40,14 +46,19 @@ fn main() {
                 _ => {}
             }
         }
-        glClearColor(1.0, 0.0, 0.0, 1.0);
+        glClearColor(1.0 * (cmask & 0x1) as f32, 1.0 * (cmask >> 1 & 0x1) as f32, 1.0 * (cmask >> 2 & 0x1) as f32, 1.0);
+        cmask = cmask << 1;
+        if cmask >= 8 {
+            cmask = 1;
+        }
         glClear(ClearBufferMask::COLOR as u32);
+        glKSwapBuffers();
         texture
-            .update(None, &with_current_context(|ctx| ctx.system_fb.as_slice_u8() ), (WINDOW_WIDTH * 4) as usize)
+            .update(None, &with_current_context(|ctx| ctx.default_framebuffer.as_slice_u8(DrawBufferSys::FrontLeft)), (WINDOW_WIDTH * 4) as usize)
             .unwrap();
         canvas.clear();
         canvas.copy(&texture, None, None).unwrap();
         canvas.present();
-        thread::sleep(Duration::from_millis(16));
+        thread::sleep(Duration::from_millis(250));
     }
 }
